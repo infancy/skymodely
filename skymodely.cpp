@@ -1,6 +1,7 @@
 #include <array>
 #include <memory>
 #include <numbers>
+#include <print>
 #include <string>
 #include <vector>
 
@@ -22,9 +23,18 @@ struct color_t
 
     float& operator[](int i) { return ((float*)this)[i]; }
 
-    void xyz_to_rgb()
+    color_t xyz_to_srgb()
     {
-        // TODO
+        // https://github.com/mmp/pbrt-v3/blob/master/src/core/spectrum.h#L56-L60
+
+        color_t rgb{};
+        color_t& xyz = *this;
+
+        rgb[0] =  3.240479f * xyz[0] - 1.537150f * xyz[1] - 0.498535f * xyz[2];
+        rgb[1] = -0.969256f * xyz[0] + 1.875991f * xyz[1] + 0.041556f * xyz[2];
+        rgb[2] =  0.055648f * xyz[0] - 0.204043f * xyz[1] + 1.057311f * xyz[2];
+
+        return rgb;
     }
 };
 
@@ -65,6 +75,8 @@ public:
         color_t albedo,
         double solar_elevation)
     {
+        skymodel_enum_ = skymodel_enum;
+
         auto skymodelstate_alloc_init = 
             skymodel_enum == skymodel_enum_t::arhosek12_rgb ?
             arhosek_rgb_skymodelstate_alloc_init:
@@ -102,7 +114,7 @@ public:
 
         if (skymodel_enum_ == skymodel_enum_t::arhosek12_xyz)
         {
-            // TODO
+            color = color.xyz_to_srgb();
         }
 
         return color;
@@ -113,6 +125,23 @@ private:
     skymodel_enum_t skymodel_enum_{};
     ArHosekSkyModelState* skymodel_state_[k_channels]{};
 };
+
+std::unique_ptr<skymodel_t> create_skymodel(
+    skymodel_enum_t skymodel_enum,
+    double turbidity,
+    color_t albedo,
+    double solar_elevation)
+{
+    switch (skymodel_enum)
+    {
+    case skymodel_enum_t::arhosek12_rgb:
+    case skymodel_enum_t::arhosek12_xyz:
+        return std::make_unique<arhosek12_tristim_t>(skymodel_enum, turbidity, albedo, solar_elevation);
+    default:
+        std::print("ERROR! no skymodel");
+        return nullptr;
+    }
+}
 
 
 // e.g. skymodely filename width height turbidity(1~10) albedo(RGB) solar_elevation(degree, 0~180) skymodel_enum
@@ -126,7 +155,7 @@ int main(int argc, char **argv)
     double turbidity = 1; // 1~10
     color_t albedo{ 0, 0, 0 };
     double solar_elevation = 90.0 / 180.0 * k_pi; // 0~180
-    skymodel_enum_t skymodel_enum = skymodel_enum_t::arhosek12_rgb;
+    skymodel_enum_t skymodel_enum = skymodel_enum_t::arhosek12_xyz;
 
     if (argc == 10)
     {
@@ -139,7 +168,7 @@ int main(int argc, char **argv)
         skymodel_enum = skymodel_enum_t(atoi(argv[9]));
     }
 
-    arhosek12_tristim_t skymodel{ skymodel_enum_t::arhosek12_rgb, turbidity, albedo, solar_elevation };
+    auto skymodel = create_skymodel(skymodel_enum, turbidity, albedo, solar_elevation);
 
     unique_ptr<color_t[]> img = make_unique<color_t[]>(sizeof(color_t) * width * height);
 
@@ -161,13 +190,14 @@ int main(int argc, char **argv)
 
             if (nr < width / 2.0)
             {
-                img[y * width + x] = skymodel.radiance(theta, gamma);
+                img[y * width + x] = skymodel->radiance(theta, gamma);
             }
         }
     }
 
     // TODO: Tone Mapping
 
+    // TODO: output jpeg
     stbi_write_hdr(filename.c_str(), width, height, 3, (float*)img.get());
     //system("tex skymodely.hdr");
 
