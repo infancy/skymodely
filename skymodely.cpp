@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <array>
 #include <memory>
 #include <numbers>
@@ -5,13 +6,24 @@
 #include <string>
 #include <vector>
 
+extern "C" {
 #include "Arhosek12/ArHosekSkyModel.h"
+}
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
 
 constexpr float k_pi = std::numbers::pi;
+
+constexpr float clamp01(float x) { return std::clamp(x, 0.f, 1.f); }
+
+struct vec3_t
+{
+    float x{}, y{}, z{};
+
+    friend float dot(vec3_t a, vec3_t b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+};
 
 struct color_t
 {
@@ -23,12 +35,19 @@ struct color_t
 
     float& operator[](int i) { return ((float*)this)[i]; }
 
+    color_t operator+(float s) const { return { r + s, g + s, b + s }; }
+    color_t operator*(float s) const { return { r * s, g * s, b * s }; }
+    color_t operator*=(float s) { r *= s, g *= s, b *= s; return *this; }
+    color_t operator*(color_t c) const { return { r * c.r, g * c.g, b * c.b }; }
+    color_t operator/(color_t c) const { return { r / c.r, g / c.g, b / c.b }; }
+    friend color_t operator*(float_t s, color_t c) { return { s * c.r, s * c.g, s * c.b }; }
+
     color_t xyz_to_srgb()
     {
         // https://github.com/mmp/pbrt-v3/blob/master/src/core/spectrum.h#L56-L60
 
-        color_t rgb{};
         color_t& xyz = *this;
+        color_t rgb{};
 
         rgb[0] =  3.240479f * xyz[0] - 1.537150f * xyz[1] - 0.498535f * xyz[2];
         rgb[1] = -0.969256f * xyz[0] + 1.875991f * xyz[1] + 0.041556f * xyz[2];
@@ -36,14 +55,36 @@ struct color_t
 
         return rgb;
     }
+
+    color_t exposure(float exposure_value = 1.f)
+    {
+        return *this * exposure_value;
+    }
+    color_t tone_mapping()
+    {
+        // ACES Filmic Tone Mapping Curve | Krzysztof Narkowicz https://knarkowicz.wordpress.com/2016/01/06/aces-filmic-tone-mapping-curve/
+
+        color_t x = *this;
+
+        auto saturate = [](color_t c) { return color_t{ clamp01(c.r), clamp01(c.g), clamp01(c.b) }; };
+
+        float a = 2.51f;
+        float b = 0.03f;
+        float c = 2.43f;
+        float d = 0.59f;
+        float e = 0.14f;
+
+        return saturate((x * (a * x + b)) / (x * (c * x + d) + e));
+    }
 };
 
-template<int wavelength_start_, int samples_, int delta_>
+
+template<int samples_, int delta_>
 class base_spectrum_t
 {
 public:
-    static constexpr int k_wavelength_start{ wavelength_start_ };
-    static constexpr int k_wavelength_end{ wavelength_start_ + samples_ * delta_ };
+    static constexpr int k_wavelength_start{ 320 };
+    static constexpr int k_wavelength_end{ 720 };
 
     static constexpr int k_samples{ samples_ };
     static constexpr int k_delta{ delta_ };
@@ -97,17 +138,17 @@ private:
     }
 };
 
-using spectrum300_t = base_spectrum_t<400, 300,  1>;
-using spectrum60_t  = base_spectrum_t<400,  60,  5>;
-using spectrum30_t  = base_spectrum_t<400,  30, 10>;
-using spectrum10_t  = base_spectrum_t<320,  10, 40>;
+using spectrum400_t = base_spectrum_t<400,  1>;
+using spectrum80_t  = base_spectrum_t< 80,  5>;
+using spectrum40_t  = base_spectrum_t< 40, 10>;
+using spectrum10_t  = base_spectrum_t< 10, 40>;
 
 enum class spectrum_samples_enum_t
 {
-    n300, // 400nm~700nm, 300 sample,  1nm per sample
-    n60,  // 400nm~700nm,  60 sample,  5nm per sample
-    n30,  // 400nm~700nm,  30 sample, 10nm per sample
-    n10,  // 320nm~720nm,  10 sample, 40nm per sample
+    n400, // 400 sample,  1nm per sample
+    n80,  //  80 sample,  5nm per sample
+    n40,  //  40 sample, 10nm per sample
+    n10,  //  10 sample, 40nm per sample
     count
 };
 
@@ -266,12 +307,14 @@ std::unique_ptr<skymodel_t> create_skymodel(
     {
         switch (spectrum_samples_eum)
         {
-        case spectrum_samples_enum_t::n300:
-            return std::make_unique<arhosek12_spectrum_t<spectrum300_t>>(skymodel_enum, turbidity, albedo, solar_elevation);
-        case spectrum_samples_enum_t::n60:
-            return std::make_unique<arhosek12_spectrum_t<spectrum60_t>>(skymodel_enum, turbidity, albedo, solar_elevation);
-        case spectrum_samples_enum_t::n30:
-            return std::make_unique<arhosek12_spectrum_t<spectrum30_t>>(skymodel_enum, turbidity, albedo, solar_elevation);
+        case spectrum_samples_enum_t::n400:
+            return std::make_unique<arhosek12_spectrum_t<spectrum400_t>>(skymodel_enum, turbidity, albedo, solar_elevation);
+        case spectrum_samples_enum_t::n80:
+            return std::make_unique<arhosek12_spectrum_t<spectrum80_t>>(skymodel_enum, turbidity, albedo, solar_elevation);
+        case spectrum_samples_enum_t::n40:
+            return std::make_unique<arhosek12_spectrum_t<spectrum40_t>>(skymodel_enum, turbidity, albedo, solar_elevation);
+        case spectrum_samples_enum_t::n10:
+            return std::make_unique<arhosek12_spectrum_t<spectrum10_t>>(skymodel_enum, turbidity, albedo, solar_elevation);
         }
     }
     default:
@@ -289,11 +332,11 @@ int main(int argc, char **argv)
     string filename = "skymodely.hdr";
     int width = 512;
     int height = 512;
-    double turbidity = 1; // 1~10
-    color_t albedo{ 0, 0, 0 };
-    double solar_elevation = 90.0 / 180.0 * k_pi; // 0~180
-    skymodel_enum_t skymodel_enum = skymodel_enum_t::arhosek12_spectrum_sky;
-    spectrum_samples_enum_t spectrum_samples_eum = spectrum_samples_enum_t::n30;
+    double turbidity = 4; // 1~10
+    color_t albedo{ 0, 0, 0 }; // 0~1
+    double solar_elevation = 90 / 180.0 * k_pi; // 0~90
+    skymodel_enum_t skymodel_enum = skymodel_enum_t::arhosek12_spectrum_sun;
+    spectrum_samples_enum_t spectrum_samples_eum = spectrum_samples_enum_t::n10;
 
     if (argc == 11)
     {
@@ -311,30 +354,38 @@ int main(int argc, char **argv)
 
     unique_ptr<color_t[]> img = make_unique<color_t[]>(width * height);
 
-    for (int y = 0; y < height; y++)
+#if !defined(_DEBUG)
+    //#pragma omp parallel for schedule(dynamic, 1) // OpenMP
+#endif
+    for (int pixely = 0; pixely < height; ++pixely)
     {
-        for (int x = 0; x < width; x++)
+        for (int pixelx = 0; pixelx < width; ++pixelx)
         {
-            int cx = width / 2;
-            int cy = height / 2;
-            int rx = (x - cx);
-            int ry = (y - cy);
+            float x = (float)pixelx /  width * 2 - 1; // [-1, 1]
+            float y = (float)pixely / height * 2 - 1; // [-1, 1]
 
-            double nr = sqrt(rx * rx + ry * ry) / (width / 2.0);
-            double th = nr * 0.5 * k_pi;
-            double ph = atan2(rx, ry);
-
-            double gamma = acos(cos(solar_elevation) * sin(th) * sin(ph) + sin(solar_elevation) * cos(th));
-            double theta = th;
-
-            if (nr < width / 2.0)
+            float x2y2 = x * x + y * y;
+            if (x2y2 <= 1)
             {
-                img[y * width + x] = skymodel->radiance(theta, gamma);
+                float z2 = 1 - x2y2;
+                double theta = std::acos(z2); // theta radian
+                double phi = atan2(x, y); // phi radian
+
+                vec3_t eye_dir{ sin(theta) * cos(phi), sin(theta) * sin(phi), cos(theta) };
+                vec3_t sun_dir{ 0, cos(solar_elevation), sin(solar_elevation) };
+                float gamma = acos(dot(eye_dir, sun_dir));
+
+                if (pixelx == 256 && pixely == 256)
+                {
+                    std::print("...");
+                }
+
+                img[pixely * width + pixelx] = skymodel->radiance(theta, gamma);
+                //img[pixely * width + pixelx] = img[pixely * width + pixelx].exposure(0.0001);
+                //img[pixely * width + pixelx] = img[pixely * width + pixelx].tone_mapping();
             }
         }
     }
-
-    // TODO: Tone Mapping
 
     // TODO: output jpeg
     stbi_write_hdr(filename.c_str(), width, height, 3, (float*)img.get());
