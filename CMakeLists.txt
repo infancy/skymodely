@@ -5,5 +5,5 @@ project(skymodely)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -std=c99")
 
-add_executable(skymodely skymodely.cpp Arhosek12/ArHosekSkyModel.c)
+add_executable(skymodely skymodely.cpp Arhosek12/ArHosekSkyModel.c ArPrague21/ArPragueSkyModelGround.c)
 target_compile_options(skymodely PUBLIC -fopenmp)

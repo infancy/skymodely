@@ -8,6 +8,7 @@
 
 extern "C" {
 #include "Arhosek12/ArHosekSkyModel.h"
+#include "ArPrague21/ArPragueSkyModelGround.h"
 }
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
@@ -20,9 +21,9 @@ constexpr float clamp01(float x) { return std::clamp(x, 0.f, 1.f); }
 
 struct vec3_t
 {
-    float x{}, y{}, z{};
+    double x{}, y{}, z{};
 
-    friend float dot(vec3_t a, vec3_t b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+    friend double dot(vec3_t a, vec3_t b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
 };
 
 struct color_t
@@ -163,11 +164,18 @@ enum class spectrum_samples_enum_t
 enum class skymodel_enum_t
 {
     none,
+
     arhosek12_rgb = 1,
     arhosek12_xyz = 2,
+
     arhosek12_spectrum_sky = 4,
     arhosek12_spectrum_sun = 8,
     arhosek12_spectrum_skysun = arhosek12_spectrum_sky | arhosek12_spectrum_sun,
+
+// WARNING: They cannot work
+    arprague21_spectrum_sky = 16,
+    arprague21_spectrum_sun = 32,
+    arprague21_spectrum_skysun = arprague21_spectrum_sky | arprague21_spectrum_sun,
 };
 bool enum_have(skymodel_enum_t skymodel_enum, skymodel_enum_t target) { return (int)skymodel_enum & (int)target; }
 
@@ -184,8 +192,8 @@ class arhosek12_tristim_t : public skymodel_t
 public:
     arhosek12_tristim_t(
         skymodel_enum_t skymodel_enum,
-        double turbidity,
-        color_t albedo,
+        double atmospheric_turbidity,
+        color_t ground_albedo,
         double solar_elevation)
     {
         skymodel_enum_ = skymodel_enum;
@@ -198,8 +206,8 @@ public:
         for (int i = 0; i < k_channels; ++i)
         {
             skymodel_state_[i] = skymodelstate_alloc_init(
-                    turbidity,
-                    albedo[i],
+                    atmospheric_turbidity,
+                    ground_albedo[i],
                     solar_elevation);
         }
     }
@@ -246,21 +254,21 @@ class arhosek12_spectrum_t : public skymodel_t
 public:
     arhosek12_spectrum_t(
         skymodel_enum_t skymodel_enum,
-        double turbidity,
-        color_t albedo,
+        double atmospheric_turbidity,
+        color_t ground_albedo,
         double solar_elevation)
     {
         skymodel_enum_ = skymodel_enum;
 
         // TODO: rgb to spectrum
-        spectrum_t spectrum_albedo{};
+        spectrum_t spectrum_ground_albedo{};
 
         for (int i = 0; i < k_channels; ++i)
         {
             skymodel_state_[i] = arhosekskymodelstate_alloc_init(
                 solar_elevation,
-                turbidity,
-                spectrum_albedo[i]);
+                atmospheric_turbidity,
+                spectrum_ground_albedo[i]);
         }
     }
 
@@ -296,18 +304,82 @@ private:
     std::array<ArHosekSkyModelState*, k_channels> skymodel_state_{};
 };
 
+template<typename spectrum_t>
+//    requires(  )
+class arprague21_spectrum_t : public skymodel_t
+{
+public:
+    arprague21_spectrum_t(
+        skymodel_enum_t skymodel_enum,
+        double atmospheric_turbidity,
+        color_t ground_albedo,
+        double solar_elevation,
+        const std::string& dataset_fullpath)
+    {
+        skymodel_enum_ = skymodel_enum;
+
+        double visibility = 7487.f * exp(-3.41f * atmospheric_turbidity) + 117.1f * exp(-0.4768f * atmospheric_turbidity);
+        visibility = std::clamp(visibility, 20.0, 131.8);
+
+        // TODO: rgb to spectrum
+        spectrum_t spectrum_ground_albedo{};
+
+        //for (int i = 0; i < k_channels; ++i) // too slow
+        {
+            skymodel_state_ = arpragueskymodelground_state_alloc_init(
+                dataset_fullpath.c_str(),
+                solar_elevation,
+                visibility,
+                spectrum_ground_albedo[0]);
+        }
+    }
+
+    ~arprague21_spectrum_t()
+    {
+        //for (int i = 0; i < k_channels; ++i)
+        {
+            arpragueskymodelground_state_free(skymodel_state_);
+        }
+    }
+
+    color_t radiance(double theta, double gamma) override
+    {
+        spectrum_t spectrum{};
+
+        for (int i = 0; i < k_channels; ++i)
+        {
+            double wavelength = spectrum.wavelength(i);
+
+            if (enum_have(skymodel_enum_, skymodel_enum_t::arprague21_spectrum_sky))
+                spectrum[i] += arpragueskymodelground_sky_radiance(skymodel_state_, theta, gamma, 0, wavelength); // FIXME: shadow params
+
+            if (enum_have(skymodel_enum_, skymodel_enum_t::arprague21_spectrum_sun))
+                spectrum[i] += arpragueskymodelground_solar_radiance(skymodel_state_, theta, wavelength);
+        }
+
+        return spectrum.to_srgb();
+    }
+
+private:
+    static constexpr int k_channels{ spectrum_t::k_samples };
+    skymodel_enum_t skymodel_enum_{};
+    //std::array<ArPragueSkyModelGroundState*, k_channels> skymodel_state_{};
+    ArPragueSkyModelGroundState* skymodel_state_{};
+};
+
 std::unique_ptr<skymodel_t> create_skymodel(
     skymodel_enum_t skymodel_enum,
     spectrum_samples_enum_t spectrum_samples_eum,
-    double turbidity,
-    color_t albedo,
-    double solar_elevation)
+    double atmospheric_turbidity,
+    color_t ground_albedo,
+    double solar_elevation,
+    const std::string& dataset_fullpath = "")
 {
     switch (skymodel_enum)
     {
     case skymodel_enum_t::arhosek12_rgb:
     case skymodel_enum_t::arhosek12_xyz:
-        return std::make_unique<arhosek12_tristim_t>(skymodel_enum, turbidity, albedo, solar_elevation);
+        return std::make_unique<arhosek12_tristim_t>(skymodel_enum, atmospheric_turbidity, ground_albedo, solar_elevation);
     case skymodel_enum_t::arhosek12_spectrum_sky:
     case skymodel_enum_t::arhosek12_spectrum_sun:
     case skymodel_enum_t::arhosek12_spectrum_skysun:
@@ -315,13 +387,29 @@ std::unique_ptr<skymodel_t> create_skymodel(
         switch (spectrum_samples_eum)
         {
         case spectrum_samples_enum_t::n400:
-            return std::make_unique<arhosek12_spectrum_t<spectrum400_t>>(skymodel_enum, turbidity, albedo, solar_elevation);
+            return std::make_unique<arhosek12_spectrum_t<spectrum400_t>>(skymodel_enum, atmospheric_turbidity, ground_albedo, solar_elevation);
         case spectrum_samples_enum_t::n80:
-            return std::make_unique<arhosek12_spectrum_t<spectrum80_t>>(skymodel_enum, turbidity, albedo, solar_elevation);
+            return std::make_unique<arhosek12_spectrum_t<spectrum80_t>>(skymodel_enum, atmospheric_turbidity, ground_albedo, solar_elevation);
         case spectrum_samples_enum_t::n40:
-            return std::make_unique<arhosek12_spectrum_t<spectrum40_t>>(skymodel_enum, turbidity, albedo, solar_elevation);
+            return std::make_unique<arhosek12_spectrum_t<spectrum40_t>>(skymodel_enum, atmospheric_turbidity, ground_albedo, solar_elevation);
         case spectrum_samples_enum_t::n10:
-            return std::make_unique<arhosek12_spectrum_t<spectrum10_t>>(skymodel_enum, turbidity, albedo, solar_elevation);
+            return std::make_unique<arhosek12_spectrum_t<spectrum10_t>>(skymodel_enum, atmospheric_turbidity, ground_albedo, solar_elevation);
+        }
+    }
+    case skymodel_enum_t::arprague21_spectrum_sky:
+    case skymodel_enum_t::arprague21_spectrum_sun:
+    case skymodel_enum_t::arprague21_spectrum_skysun:
+    {
+        switch (spectrum_samples_eum)
+        {
+        case spectrum_samples_enum_t::n400:
+            return std::make_unique<arprague21_spectrum_t<spectrum400_t>>(skymodel_enum, atmospheric_turbidity, ground_albedo, solar_elevation, dataset_fullpath);
+        case spectrum_samples_enum_t::n80:
+            return std::make_unique<arprague21_spectrum_t<spectrum80_t>>(skymodel_enum, atmospheric_turbidity, ground_albedo, solar_elevation, dataset_fullpath);
+        case spectrum_samples_enum_t::n40:
+            return std::make_unique<arprague21_spectrum_t<spectrum40_t>>(skymodel_enum, atmospheric_turbidity, ground_albedo, solar_elevation, dataset_fullpath);
+        case spectrum_samples_enum_t::n10:
+            return std::make_unique<arprague21_spectrum_t<spectrum10_t>>(skymodel_enum, atmospheric_turbidity, ground_albedo, solar_elevation, dataset_fullpath);
         }
     }
     default:
@@ -331,7 +419,7 @@ std::unique_ptr<skymodel_t> create_skymodel(
 }
 
 
-// e.g. skymodely filename width height turbidity(1~10) albedo(RGB) solar_elevation(degree, 0~180) skymodel_enum spectrum_samples_enum
+// e.g. skymodely filename width height turbidity(1~10) albedo(RGB) elevation(degree, 0~90) skymodel_enum spectrum_samples_enum
 int main(int argc, char **argv)
 {
     using namespace std;
@@ -339,30 +427,36 @@ int main(int argc, char **argv)
     string filename = "skymodely.hdr";
     int width = 512;
     int height = 512;
-    double turbidity = 4; // 1~10
-    color_t albedo{ 0, 0, 0 }; // 0~1
-    double solar_elevation = 90 / 180.0 * k_pi; // 0~90
-    skymodel_enum_t skymodel_enum = skymodel_enum_t::arhosek12_spectrum_skysun;
+    double atmospheric_turbidity = 4; // 1~10
+    color_t ground_albedo{ 0, 0, 0 }; // 0~1
+    double solar_elevation = 45 / 180.0 * k_pi; // 0~90 for ArHosek12, -4.2~90 for ArPrague21
+    skymodel_enum_t skymodel_enum = skymodel_enum_t::arprague21_spectrum_sky;
     spectrum_samples_enum_t spectrum_samples_eum = spectrum_samples_enum_t::n10;
+    string arprague21_dataset_fullpath = R"(./ArPrague21/SkyModelDatasetGround.dat)"; // WARNING!!!: replace it with yourself path
 
-    if (argc == 11)
+    if (argc == 12)
     {
         filename = argv[1];
         width = atof(argv[2]);
         height = atof(argv[3]);
-        turbidity = atof(argv[4]);
-        albedo = color_t{ stof(argv[5]), stof(argv[6]), stof(argv[7]) };
+        atmospheric_turbidity = atof(argv[4]);
+        ground_albedo = color_t{ stof(argv[5]), stof(argv[6]), stof(argv[7]) };
         solar_elevation = atof(argv[8]) / 180.0 * k_pi;
         skymodel_enum = skymodel_enum_t(atoi(argv[9]));
         spectrum_samples_eum = spectrum_samples_enum_t(atoi(argv[10]));
+        arprague21_dataset_fullpath = argv[11];
     }
 
-    auto skymodel = create_skymodel(skymodel_enum, spectrum_samples_eum, turbidity, albedo, solar_elevation);
+    auto skymodel = create_skymodel(
+        skymodel_enum, spectrum_samples_eum, 
+        atmospheric_turbidity, ground_albedo, solar_elevation,
+        arprague21_dataset_fullpath
+    );
 
     unique_ptr<color_t[]> img = make_unique<color_t[]>(width * height);
 
 #if !defined(_DEBUG)
-    //#pragma omp parallel for schedule(dynamic, 1) // OpenMP
+    #pragma omp parallel for schedule(dynamic, 1) // OpenMP
 #endif
     for (int pixely = 0; pixely < height; ++pixely)
     {
@@ -380,16 +474,34 @@ int main(int argc, char **argv)
 
                 vec3_t eye_dir{ sin(theta) * cos(phi), sin(theta) * sin(phi), cos(theta) };
                 vec3_t sun_dir{ 0, cos(solar_elevation), sin(solar_elevation) };
-                float gamma = acos(dot(eye_dir, sun_dir));
+                double gamma = acos(dot(eye_dir, sun_dir));
 
-                //if (pixelx == 256 && pixely == 256)
+                //if (pixely % 10 == 0)
                 //{
                 //    std::print("debug here");
                 //}
 
+                //if (enum_have(skymodel_enum, skymodel_enum_t::arprague21_spectrum_sky) ||
+                //    enum_have(skymodel_enum, skymodel_enum_t::arprague21_spectrum_sun))
+                //{
+                //    eye_dir = vec3_t{ cos(phi) * cos(theta), sin(phi) * cos(theta), sin(theta) };
+                //    vec3_t up_dir{ 0, 0, 1 };
+                //    double theta2{};
+                //    double shadow{};
+                //    arpragueskymodelground_compute_angles(
+                //        solar_elevation,
+                //        phi,
+                //        (const double*) &eye_dir,
+                //        (const double*) &up_dir,
+                //        &theta2,
+                //        &gamma,
+                //        &shadow
+                //    );
+                //}
+
                 img[pixely * width + pixelx] = skymodel->radiance(theta, gamma);
-                img[pixely * width + pixelx] = img[pixely * width + pixelx].exposure(3);
-                //img[pixely * width + pixelx] = img[pixely * width + pixelx].tone_mapping();
+                img[pixely * width + pixelx] = img[pixely * width + pixelx].exposure(3); // optional
+                //img[pixely * width + pixelx] = img[pixely * width + pixelx].tone_mapping(); // optional
             }
         }
     }
