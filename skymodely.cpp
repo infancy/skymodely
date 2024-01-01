@@ -418,52 +418,27 @@ std::unique_ptr<skymodel_t> create_skymodel(
     }
 }
 
-
-// e.g. skymodely filename width height turbidity(1~10) albedo(RGB) elevation(degree, 0~90) skymodel_enum spectrum_samples_enum
-int main(int argc, char **argv)
+void create_sky(
+    skymodel_enum_t skymodel_enum, spectrum_samples_enum_t spectrum_samples_eum,
+    double atmospheric_turbidity, color_t ground_albedo, double solar_elevation,
+    std::unique_ptr<color_t[]>& img, int sub_width, int sub_height, int width_num = 0, int height_num = 0, int image_index = 0,
+    const std::string& dataset_fullpath = "")
 {
-    using namespace std;
-
-    string filename = "skymodely.hdr";
-    int width = 512;
-    int height = 512;
-    double atmospheric_turbidity = 4; // 1~10
-    color_t ground_albedo{ 0, 0, 0 }; // 0~1
-    double solar_elevation = 45 / 180.0 * k_pi; // 0~90 for ArHosek12, -4.2~90 for ArPrague21
-    skymodel_enum_t skymodel_enum = skymodel_enum_t::arprague21_spectrum_sky;
-    spectrum_samples_enum_t spectrum_samples_eum = spectrum_samples_enum_t::n10;
-    string arprague21_dataset_fullpath = R"(./ArPrague21/SkyModelDatasetGround.dat)"; // WARNING!!!: replace it with yourself path
-
-    if (argc == 12)
-    {
-        filename = argv[1];
-        width = atof(argv[2]);
-        height = atof(argv[3]);
-        atmospheric_turbidity = atof(argv[4]);
-        ground_albedo = color_t{ stof(argv[5]), stof(argv[6]), stof(argv[7]) };
-        solar_elevation = atof(argv[8]) / 180.0 * k_pi;
-        skymodel_enum = skymodel_enum_t(atoi(argv[9]));
-        spectrum_samples_eum = spectrum_samples_enum_t(atoi(argv[10]));
-        arprague21_dataset_fullpath = argv[11];
-    }
-
     auto skymodel = create_skymodel(
-        skymodel_enum, spectrum_samples_eum, 
+        skymodel_enum, spectrum_samples_eum,
         atmospheric_turbidity, ground_albedo, solar_elevation,
-        arprague21_dataset_fullpath
+        dataset_fullpath
     );
-
-    unique_ptr<color_t[]> img = make_unique<color_t[]>(width * height);
 
 #if !defined(_DEBUG)
     #pragma omp parallel for schedule(dynamic, 1) // OpenMP
 #endif
-    for (int pixely = 0; pixely < height; ++pixely)
+    for (int pixely = 0; pixely < sub_height; ++pixely)
     {
-        for (int pixelx = 0; pixelx < width; ++pixelx)
+        for (int pixelx = 0; pixelx < sub_width; ++pixelx)
         {
-            float x = (float)pixelx /  width * 2 - 1; // [-1, 1]
-            float y = (float)pixely / height * 2 - 1; // [-1, 1]
+            float x = (float)pixelx / sub_width * 2 - 1; // [-1, 1]
+            float y = (float)pixely / sub_height * 2 - 1; // [-1, 1]
 
             float x2y2 = x * x + y * y;
             if (x2y2 <= 1)
@@ -499,16 +474,92 @@ int main(int argc, char **argv)
                 //    );
                 //}
 
-                img[pixely * width + pixelx] = skymodel->radiance(theta, gamma);
-                img[pixely * width + pixelx] = img[pixely * width + pixelx].exposure(3); // optional
-                //img[pixely * width + pixelx] = img[pixely * width + pixelx].tone_mapping(); // optional
+                int col_index = image_index % width_num;
+                int row_index = image_index / width_num;
+                int fullpixelx = pixelx + col_index * sub_width;
+                int fullpixely = pixely + row_index * sub_height;
+
+                color_t& color = img[fullpixely * sub_width * width_num + fullpixelx];
+
+                color = skymodel->radiance(theta, gamma);
+                color = color.exposure(3); // optional
+                //color = color.tone_mapping(); // optional
             }
         }
     }
+}
 
-    // TODO: output jpeg
+// e.g. skymodely filename width height turbidity(1~10) albedo(RGB) elevation(degree, 0~90) skymodel_enum spectrum_samples_enum
+int main(int argc, char **argv)
+{
+    using namespace std;
+
+    string filename = "skymodely.hdr";
+    int width = 512;
+    int height = 512;
+    double atmospheric_turbidity = 4; // 1~10
+    color_t ground_albedo{ 0, 0, 0 }; // 0~1
+    double solar_elevation = 45 / 180.0 * k_pi; // 0~90 for ArHosek12, -4.2~90 for ArPrague21
+    skymodel_enum_t skymodel_enum = skymodel_enum_t::arhosek12_spectrum_sky;
+    spectrum_samples_enum_t spectrum_samples_eum = spectrum_samples_enum_t::n10;
+    string arprague21_dataset_fullpath = R"(./ArPrague21/SkyModelDatasetGround.dat)"; // WARNING!!!: replace it with yourself path
+
+    if (argc == 12)
+    {
+        filename = argv[1];
+        width = atof(argv[2]);
+        height = atof(argv[3]);
+        atmospheric_turbidity = atof(argv[4]);
+        ground_albedo = color_t{ stof(argv[5]), stof(argv[6]), stof(argv[7]) };
+        solar_elevation = atof(argv[8]) / 180.0 * k_pi;
+        skymodel_enum = skymodel_enum_t(atoi(argv[9]));
+        spectrum_samples_eum = spectrum_samples_enum_t(atoi(argv[10]));
+        arprague21_dataset_fullpath = argv[11];
+    }
+
+
+#define IMAGE_TYPE 1
+
+#if IMAGE_TYPE == 0 // generator single image from params above
+    unique_ptr<color_t[]> img = make_unique<color_t[]>(width * height);
+    create_sky(
+        skymodel_enum, spectrum_samples_eum,
+        atmospheric_turbidity, ground_albedo, solar_elevation,
+        img, width, height
+    );
+#elif IMAGE_TYPE == 1 // generator image like https://cgg.mff.cuni.cz/projects/SkylightModelling/teaser.jpg
+    filename = "teaser.hdr";
+
+    int sub_width = 50;
+    int sub_height = 50;
+
+    int width_num = 30;
+    int height_num = 10;
+
+    width = sub_width * width_num;
+    height = sub_height * height_num;
+
+    unique_ptr<color_t[]> img = make_unique<color_t[]>(width * height);
+
+    int image_index = -1;
+    for (int turbidity = 0; turbidity < height_num; ++turbidity)
+    {
+        for (int elevation = 0; elevation < width_num; ++elevation)
+        {
+            ++image_index;
+
+            create_sky(
+                skymodel_enum, spectrum_samples_eum,
+                turbidity + 1, ground_albedo, elevation * 3 / 180.0 * k_pi,
+                img, sub_width, sub_height, width_num, height_num, image_index
+                //img, sub_width, sub_height, elevation * sub_width, turbidity * sub_height
+            );
+        }
+    }
+#endif
+
     stbi_write_hdr(filename.c_str(), width, height, 3, (float*)img.get());
-    //system("tex skymodely.hdr");
+    //system("tex skymodely.hdr"); // optional
 
     return 0;
 }
