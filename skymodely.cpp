@@ -56,7 +56,7 @@ struct color_t
         return rgb;
     }
 
-    color_t exposure(float exposure_value = 1.f)
+    color_t exposure(float exposure_value = 1.f) const
     {
         return *this * exposure_value;
     }
@@ -95,6 +95,11 @@ public:
 
     color_t to_srgb()
     {
+        // https://pbr-book.org/4ed/Radiometry,_Spectra,_and_Color/Color#XYZColor
+
+        // precomputed $\int Y(\lambda) \mathrm{d} \lambda$
+        static constexpr float inverse_CIE_Y_integral = 1 / 106.856895;
+
         color_t color{};
 
         for (int i = 0; i < k_samples; ++i)
@@ -106,6 +111,8 @@ public:
             color.y += spectrum[i] * yFit_1931(wavelen) * k_delta;
             color.z += spectrum[i] * zFit_1931(wavelen) * k_delta;
         }
+
+        color *= inverse_CIE_Y_integral;
 
         return color.xyz_to_srgb();
     }
@@ -277,7 +284,7 @@ public:
                 spectrum[i] += arhosekskymodel_radiance(skymodel_state_[i], theta, gamma, wavelength);
 
             if (enum_have(skymodel_enum_, skymodel_enum_t::arhosek12_spectrum_sun))
-                spectrum[i] += arhosekskymodel_solar_radiance(skymodel_state_[i], theta, gamma, wavelength);
+                spectrum[i] += arhosekskymodel_only_solar_radiance(skymodel_state_[i], theta, gamma, wavelength);
         }
 
         return spectrum.to_srgb();
@@ -335,7 +342,7 @@ int main(int argc, char **argv)
     double turbidity = 4; // 1~10
     color_t albedo{ 0, 0, 0 }; // 0~1
     double solar_elevation = 90 / 180.0 * k_pi; // 0~90
-    skymodel_enum_t skymodel_enum = skymodel_enum_t::arhosek12_spectrum_sun;
+    skymodel_enum_t skymodel_enum = skymodel_enum_t::arhosek12_spectrum_skysun;
     spectrum_samples_enum_t spectrum_samples_eum = spectrum_samples_enum_t::n10;
 
     if (argc == 11)
@@ -375,13 +382,13 @@ int main(int argc, char **argv)
                 vec3_t sun_dir{ 0, cos(solar_elevation), sin(solar_elevation) };
                 float gamma = acos(dot(eye_dir, sun_dir));
 
-                if (pixelx == 256 && pixely == 256)
-                {
-                    std::print("...");
-                }
+                //if (pixelx == 256 && pixely == 256)
+                //{
+                //    std::print("debug here");
+                //}
 
                 img[pixely * width + pixelx] = skymodel->radiance(theta, gamma);
-                //img[pixely * width + pixelx] = img[pixely * width + pixelx].exposure(0.0001);
+                img[pixely * width + pixelx] = img[pixely * width + pixelx].exposure(3);
                 //img[pixely * width + pixelx] = img[pixely * width + pixelx].tone_mapping();
             }
         }
