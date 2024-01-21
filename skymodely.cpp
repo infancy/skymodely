@@ -301,17 +301,20 @@ std::unique_ptr<skymodel_t> create_skymodel(
     spectrum_samples_enum_t spectrum_samples_eum,
     double turbidity,
     color_t albedo,
-    double solar_elevation)
+    double solar_elevation,
+    float_t* exposure_value)
 {
     switch (skymodel_enum)
     {
     case skymodel_enum_t::arhosek12_rgb:
     case skymodel_enum_t::arhosek12_xyz:
+        *exposure_value = 0.02;
         return std::make_unique<arhosek12_tristim_t>(skymodel_enum, turbidity, albedo, solar_elevation);
     case skymodel_enum_t::arhosek12_spectrum_sky:
     case skymodel_enum_t::arhosek12_spectrum_sun:
     case skymodel_enum_t::arhosek12_spectrum_skysun:
     {
+        *exposure_value = 3;
         switch (spectrum_samples_eum)
         {
         case spectrum_samples_enum_t::n400:
@@ -342,7 +345,11 @@ int main(int argc, char **argv)
     double turbidity = 4; // 1~10
     color_t albedo{ 0, 0, 0 }; // 0~1
     double solar_elevation = 90 / 180.0 * k_pi; // 0~90
+#if 0
+    skymodel_enum_t skymodel_enum = skymodel_enum_t::arhosek12_rgb;
+#else
     skymodel_enum_t skymodel_enum = skymodel_enum_t::arhosek12_spectrum_skysun;
+#endif
     spectrum_samples_enum_t spectrum_samples_eum = spectrum_samples_enum_t::n10;
 
     if (argc == 11)
@@ -357,7 +364,8 @@ int main(int argc, char **argv)
         spectrum_samples_eum = spectrum_samples_enum_t(atoi(argv[10]));
     }
 
-    auto skymodel = create_skymodel(skymodel_enum, spectrum_samples_eum, turbidity, albedo, solar_elevation);
+    float exposure_value;
+    auto skymodel = create_skymodel(skymodel_enum, spectrum_samples_eum, turbidity, albedo, solar_elevation, &exposure_value);
 
     unique_ptr<color_t[]> img = make_unique<color_t[]>(width * height);
 
@@ -374,11 +382,11 @@ int main(int argc, char **argv)
             float x2y2 = x * x + y * y;
             if (x2y2 <= 1)
             {
-                float z2 = 1 - x2y2;
-                double theta = std::acos(z2); // theta radian
+                float z = sqrt(1 - x2y2);
+                double theta = std::acos(z); // theta radian
                 double phi = atan2(x, y); // phi radian
 
-                vec3_t eye_dir{ sin(theta) * cos(phi), sin(theta) * sin(phi), cos(theta) };
+                vec3_t eye_dir{ sin(theta) * cos(phi), sin(theta) * sin(phi), cos(theta) }; // same as { x, y, z }
                 vec3_t sun_dir{ 0, cos(solar_elevation), sin(solar_elevation) };
                 float gamma = acos(dot(eye_dir, sun_dir));
 
@@ -388,7 +396,7 @@ int main(int argc, char **argv)
                 //}
 
                 img[pixely * width + pixelx] = skymodel->radiance(theta, gamma);
-                img[pixely * width + pixelx] = img[pixely * width + pixelx].exposure(3);
+                img[pixely * width + pixelx] = img[pixely * width + pixelx].exposure(exposure_value);
                 //img[pixely * width + pixelx] = img[pixely * width + pixelx].tone_mapping();
             }
         }
@@ -396,7 +404,10 @@ int main(int argc, char **argv)
 
     // TODO: output jpeg
     stbi_write_hdr(filename.c_str(), width, height, 3, (float*)img.get());
-    //system("tex skymodely.hdr");
+
+#if defined(_WIN32) || defined(_WIN64)
+    system("tev skymodely.hdr"); // https://github.com/Tom94/tev
+#endif
 
     return 0;
 }
